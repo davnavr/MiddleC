@@ -1,0 +1,7 @@
+[package]
+name = "middlec-compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sailar = { git = "https://github.com/davnavr/SAILAR-lang", rev = "cf303c9e3b904c8df4e3a9689a73a5183815fbbd" }
