@@ -38,6 +38,8 @@ impl LocationMap {
     }
 }
 
+//pub trait Input
+
 // TODO: Maybe add parameter that says how many spaces correspond to a tab?
 /// Tokenizes a string of characters, returning the tokens paired with UTF-8 byte offsets pointing into the original string, as
 /// well as a map to determine the line and column numbers from an offset.
@@ -112,8 +114,8 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
     let mut indentation_level = 0usize;
 
     macro_rules! emit_token {
-        ($token: expr) => {{
-            let actual_offset = offset - characters.len();
+        ($token: expr, $offset: expr) => {{
+            let actual_offset = offset - characters.len() - ($offset);
             locations.0.insert(actual_offset, Location { line, column });
             tokens.push(($token, actual_offset));
             characters.clear();
@@ -125,7 +127,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
 
         if code_point == '\n' {
             if !characters.is_empty() {
-                emit_token!(Token::Unknown(characters.clone()));
+                emit_token!(Token::Unknown(characters.clone()), 0);
                 unknown_length = 0;
             }
 
@@ -139,7 +141,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
             debug_assert_eq!(characters.chars().count(), unknown_length);
 
             if !characters.is_empty() {
-                emit_token!(Token::Unknown(characters.clone()));
+                emit_token!(Token::Unknown(characters.clone()), 1);
                 unknown_length = 0;
             }
 
@@ -178,9 +180,10 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                 MatchResult::Failure => unknown_length += 1,
                 MatchResult::Success(token) => {
                     if unknown_length > 0 {
-                        emit_token!(Token::Unknown(
-                            characters.chars().take(unknown_length).collect()
-                        ));
+                        emit_token!(
+                            Token::Unknown(characters.chars().take(unknown_length).collect()),
+                            unknown_length
+                        );
 
                         column = LocationNum::new(column.get() + unknown_length)
                             .expect("column overflow");
@@ -189,7 +192,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                     }
 
                     let next_column = column.get() + characters.chars().count();
-                    emit_token!(token);
+                    emit_token!(token, 0);
                     column = LocationNum::new(next_column).expect("column overflow");
                 }
             }
@@ -197,7 +200,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
     }
 
     if !characters.is_empty() {
-        emit_token!(Token::Unknown(characters.clone()));
+        emit_token!(Token::Unknown(characters.clone()), 0);
     }
 
     (tokens, locations)
