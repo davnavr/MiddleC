@@ -50,9 +50,12 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
         Failure,
     }
 
+    /// Matches against a character in the input, taking an offset from the start of the token.
+    struct Match(fn(char, usize, &mut &'static [Match]) -> MatchResult);
+
     macro_rules! string_match {
-        ($name: ident, $string: expr, $token: ident) => {
-            fn $name(c: char, index: usize) -> MatchResult {
+        ($string: expr, $token: ident) => {{
+            fn string_match(c: char, index: usize, _: &mut &'static [Match]) -> MatchResult {
                 static EXPECTED_STRING: &[char] = &$string;
 
                 match EXPECTED_STRING.get(index) {
@@ -66,19 +69,33 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                     Some(_) | None => MatchResult::Failure,
                 }
             }
-        };
+
+            Match(string_match)
+        }};
     }
 
-    string_match!(
-        function_keyword,
-        ['f', 'u', 'n', 'c', 't', 'i', 'o', 'n'],
-        Function
-    );
+    macro_rules! character_match {
+        ($expected: expr, $token: ident) => {{
+            fn char_match(c: char, index: usize, _: &mut &'static [Match]) -> MatchResult {
+                if index == 0 && c == $expected {
+                    MatchResult::Success(Token::$token)
+                } else {
+                    MatchResult::Failure
+                }
+            }
 
-    /// A function that matches against a character in the input, as well as an offset from the start of the token.
-    type Match = fn(char, usize) -> MatchResult;
+            Match(char_match)
+        }};
+    }
 
-    static DEFAULT_MATCHES: &[Match] = &[function_keyword];
+    static DEFAULT_MATCHES: &[Match] = &[
+        string_match!(['f', 'u', 'n', 'c', 't', 'i', 'o', 'n'], Function),
+        character_match!('{', OpenBracket),
+        character_match!('}', CloseBracket),
+        character_match!('(', OpenParenthesis),
+        character_match!(')', CloseParenthesis),
+        character_match!('=', Equals),
+    ];
 
     let mut characters = String::new();
     let mut current_matches = DEFAULT_MATCHES;
@@ -95,7 +112,6 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
             locations.0.insert(actual_offset, Location { line, column });
             tokens.push(($token, actual_offset));
             characters.clear();
-            unknown_length = 0;
         }};
     }
 
@@ -105,6 +121,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
         if code_point == '\n' {
             if !characters.is_empty() {
                 emit_token!(Token::Unknown(characters.clone()));
+                unknown_length = 0;
             }
 
             column = DEFAULT_LOCATION_NUMBER;
@@ -113,28 +130,31 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                 .checked_add(1)
                 .and_then(LocationNum::new)
                 .expect("line number overflow");
-        } else {
-            let mut result = MatchResult::Failure;
+        } else { // TODO: Add else if for handling whitespace if column number == DEFAULT
+            let mut best_result = MatchResult::Failure;
 
             for character_match in current_matches {
-                result = character_match(code_point, characters.len());
+                let result = character_match.0(code_point, characters.len(), &mut current_matches);
 
-                if let MatchResult::Success(_) = result {
-                    break;
+                match result {
+                    MatchResult::Success(_) | MatchResult::Continue => best_result = result,
+                    MatchResult::Failure => (),
                 }
             }
 
             characters.push(code_point);
 
-            match result {
+            match best_result {
                 MatchResult::Continue => (),
                 MatchResult::Failure => unknown_length += 1,
                 MatchResult::Success(token) => {
                     if unknown_length > 0 {
+                        unknown_length = 0;
+
                         emit_token!(Token::Unknown(
                             characters.chars().take(unknown_length).collect()
                         ));
-                        
+
                         column = LocationNum::new(column.get() + unknown_length)
                             .expect("column overflow");
                     }
