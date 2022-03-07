@@ -1,9 +1,9 @@
 use std::collections::hash_map;
 
 pub use sailar::format::Identifier;
-pub use std::num::NonZeroUsize as LocationNum;
+pub use std::num::NonZeroUsize as LocationNumber;
 
-pub const DEFAULT_LOCATION_NUMBER: LocationNum = unsafe { LocationNum::new_unchecked(1) };
+pub const DEFAULT_LOCATION_NUMBER: LocationNumber = unsafe { LocationNumber::new_unchecked(1) };
 
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,8 +23,8 @@ pub enum Token {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Location {
-    pub line: LocationNum,
-    pub column: LocationNum,
+    pub line: LocationNumber,
+    pub column: LocationNumber,
 }
 
 /// Maps an offset into a UTF-8 source file to a line and column number.
@@ -38,172 +38,234 @@ impl LocationMap {
     }
 }
 
-//pub trait Input
+pub trait Input {
+    type Error;
 
-// TODO: Maybe add parameter that says how many spaces correspond to a tab?
-/// Tokenizes a string of characters, returning the tokens paired with UTF-8 byte offsets pointing into the original string, as
-/// well as a map to determine the line and column numbers from an offset.
-pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
-    input: I,
-) -> (Vec<(Token, usize)>, LocationMap) {
+    fn next(&mut self) -> Result<Option<char>, Self::Error>;
+}
+
+pub struct IteratorInput<I>(I);
+
+impl<I: std::iter::Iterator<Item = char>> Input for IteratorInput<I> {
+    type Error = std::convert::Infallible;
+
+    fn next(&mut self) -> Result<Option<char>, Self::Error> {
+        Ok(std::iter::Iterator::next(&mut self.0))
+    }
+}
+
+impl<I: std::iter::IntoIterator<Item = char>> From<I> for IteratorInput<I::IntoIter> {
+    fn from(iterator: I) -> Self {
+        Self(iterator.into_iter())
+    }
+}
+
+pub fn tokenize<I, C>(input: C) -> Result<(Vec<(Token, usize)>, LocationMap), I::Error>
+where
+    I: Input,
+    C: Into<I>,
+{
     enum MatchResult {
         Continue,
-        Success(Token),
+        Success(Token, usize),
         Failure,
     }
 
-    //struct State
+    type Match = fn(char, usize, &mut State) -> MatchResult;
 
-    // TODO: Make this a simple type alias.
-    /// Matches against a character in the input, taking an offset from the start of the token.
-    struct Match(fn(char, usize, &mut &'static [Match]) -> MatchResult);
-
-    macro_rules! string_match {
-        ($string: expr, $token: ident) => {{
-            fn string_match(c: char, index: usize, _: &mut &'static [Match]) -> MatchResult {
-                static EXPECTED_STRING: &[char] = &$string;
-
-                match EXPECTED_STRING.get(index) {
-                    Some(expected) if *expected == c => {
-                        if index == EXPECTED_STRING.len() - 1 {
-                            MatchResult::Success(Token::$token)
-                        } else {
-                            MatchResult::Continue
-                        }
-                    }
-                    Some(_) | None => MatchResult::Failure,
-                }
-            }
-
-            Match(string_match)
-        }};
+    struct CharBuffer {
+        buffer: String,
+        /// The total number of code points that are part of an unknown token.
+        unknown_code_points: usize,
+        /// The total number of code points in the buffer.
+        code_point_length: usize,
     }
 
-    macro_rules! character_match {
-        ($expected: expr, $token: ident) => {{
-            fn char_match(c: char, index: usize, _: &mut &'static [Match]) -> MatchResult {
-                if index == 0 && c == $expected {
-                    MatchResult::Success(Token::$token)
-                } else {
-                    MatchResult::Failure
-                }
+    impl CharBuffer {
+        fn with_capacity(capacity: usize) -> Self {
+            Self {
+                buffer: String::with_capacity(capacity),
+                unknown_code_points: 0,
+                code_point_length: 0,
             }
+        }
 
-            Match(char_match)
-        }};
-    }
+        fn push(&mut self, c: char) {
+            self.buffer.push(c);
+            self.code_point_length += 1;
+        }
 
-    // Matches further down have higher priority.
-    static DEFAULT_MATCHES: &[Match] = &[
-        string_match!(['f', 'u', 'n', 'c', 't', 'i', 'o', 'n'], Function),
-        character_match!('{', OpenBracket),
-        character_match!('}', CloseBracket),
-        character_match!('(', OpenParenthesis),
-        character_match!(')', CloseParenthesis),
-        character_match!('=', Equals),
-    ];
+        fn clear(&mut self) {
+            self.buffer.clear();
+            self.code_point_length = 0;
+        }
 
-    let mut characters = String::new();
-    let mut current_matches = DEFAULT_MATCHES;
-    let mut unknown_length = 0usize;
-    let mut offset = 0usize;
-    let mut tokens = Vec::new();
-    let mut locations = LocationMap(hash_map::HashMap::new());
-    let mut column = DEFAULT_LOCATION_NUMBER;
-    let mut line = DEFAULT_LOCATION_NUMBER;
-    let mut indentation_level = 0usize;
+        fn contents(&self) -> (&str, &str) {
+            (
+                &self.buffer[0..self.unknown_code_points],
+                &self.buffer[self.unknown_code_points..],
+            )
+        }
 
-    macro_rules! emit_token {
-        ($token: expr, $offset: expr) => {{
-            let actual_offset = offset - characters.len() - ($offset);
-            locations.0.insert(actual_offset, Location { line, column });
-            tokens.push(($token, actual_offset));
-            characters.clear();
-        }};
-    }
-
-    for code_point in input.into_iter() {
-        offset += code_point.len_utf8();
-
-        if code_point == '\n' {
-            if !characters.is_empty() {
-                emit_token!(Token::Unknown(characters.clone()), 0);
-                unknown_length = 0;
-            }
-
-            column = DEFAULT_LOCATION_NUMBER;
-            line = line
-                .get()
-                .checked_add(1)
-                .and_then(LocationNum::new)
-                .expect("line number overflow");
-        } else if code_point.is_whitespace() && column > DEFAULT_LOCATION_NUMBER {
-            debug_assert_eq!(characters.chars().count(), unknown_length);
-
-            if !characters.is_empty() {
-                emit_token!(Token::Unknown(characters.clone()), 1);
-                unknown_length = 0;
-            }
-
-            column = LocationNum::new(column.get() + 1 + unknown_length).expect("column overflow");
-
-            // // TODO: Collect whitespace instead.
-            // let indentation_amount = if code_point != '\t' {
-            //     1usize
-            // } else {
-            //     todo!("special handling for calculating indentation when code point is tab")
-            // };
-
-            // indentation_level = indentation_amount;
-
-            // if indentation_amount < indentation_level {
-            //     emit_token!(Token::Dedent);
-            // } else if indentation_amount > indentation_level {
-            //     emit_token!(Token::Indent);
-            // }
-        } else {
-            let mut best_result = MatchResult::Failure;
-
-            for character_match in current_matches {
-                let result = character_match.0(code_point, characters.len(), &mut current_matches);
-
-                match result {
-                    MatchResult::Success(_) | MatchResult::Continue => best_result = result,
-                    MatchResult::Failure => (),
-                }
-            }
-
-            characters.push(code_point);
-
-            match best_result {
-                MatchResult::Continue => (),
-                MatchResult::Failure => unknown_length += 1,
-                MatchResult::Success(token) => {
-                    if unknown_length > 0 {
-                        emit_token!(
-                            Token::Unknown(characters.chars().take(unknown_length).collect()),
-                            unknown_length
-                        );
-
-                        column = LocationNum::new(column.get() + unknown_length)
-                            .expect("column overflow");
-
-                        unknown_length = 0;
-                    }
-
-                    let next_column = column.get() + characters.chars().count();
-                    emit_token!(token, 0);
-                    column = LocationNum::new(next_column).expect("column overflow");
-                }
+        fn take_unknown(&mut self) -> (String, usize) {
+            if self.unknown_code_points > 0 {
+                let unknown_characters = self.buffer.drain(0..self.unknown_code_points).collect();
+                self.code_point_length -= self.unknown_code_points;
+                (
+                    unknown_characters,
+                    std::mem::replace(&mut self.unknown_code_points, 0),
+                )
+            } else {
+                (String::default(), 0)
             }
         }
     }
 
-    if !characters.is_empty() {
-        emit_token!(Token::Unknown(characters.clone()), 0);
+    let mut matches: [(Match, usize); 6] = {
+        macro_rules! character_match {
+            ($expected: expr, $token: ident) => {{
+                fn character_match(c: char, index: usize, _: &mut State) -> MatchResult {
+                    if index == 0 && c == $expected {
+                        MatchResult::Success(Token::$token, 1)
+                    } else {
+                        MatchResult::Failure
+                    }
+                }
+
+                (character_match, 0)
+            }};
+        }
+
+        macro_rules! string_match {
+            ($expected: expr, $token: ident) => {{
+                fn string_match(c: char, index: usize, _: &mut State) -> MatchResult {
+                    static EXPECTED: &[char] = &$expected;
+
+                    match EXPECTED.get(index) {
+                        Some(expected) if *expected == c => {
+                            if index == EXPECTED.len() - 1 {
+                                MatchResult::Success(Token::$token, EXPECTED.len())
+                            } else {
+                                MatchResult::Continue
+                            }
+                        }
+                        Some(_) | None => MatchResult::Failure,
+                    }
+                }
+
+                (string_match, 0)
+            }};
+        }
+
+        [
+            character_match!('{', OpenBracket),
+            character_match!('}', CloseBracket),
+            character_match!('(', OpenParenthesis),
+            character_match!(')', CloseParenthesis),
+            character_match!('=', Equals),
+            string_match!(['f', 'u', 'n', 'c', 't', 'i', 'o', 'n'], Function),
+        ]
+    };
+
+    struct State {
+        /// A byte offset from the start of the input to the current code point.
+        offset: usize,
+        line: LocationNumber,
+        /// An index from the start of the current line to the current code point.
+        column: LocationNumber,
+        /// Contains unknown characters followed by the contents of the token that is currently being read.
+        buffer: CharBuffer,
     }
 
-    (tokens, locations)
+    impl State {
+        fn emit_token(
+            &mut self,
+            tokens: &mut Vec<(Token, usize)>,
+            locations: &mut LocationMap,
+            token: Token,
+            byte_length: usize,
+            code_point_length: usize,
+        ) {
+            let actual_offset = self.offset - byte_length;
+            tokens.push((token, actual_offset));
+            locations.0.insert(
+                actual_offset,
+                Location {
+                    line: self.line,
+                    column: self.column,
+                },
+            );
+            self.column = LocationNumber::new(self.column.get() + code_point_length).unwrap();
+            self.buffer.clear();
+        }
+
+        fn emit_unknown_token(
+            &mut self,
+            tokens: &mut Vec<(Token, usize)>,
+            locations: &mut LocationMap,
+        ) {
+            let (unknown_token, code_point_length) = self.buffer.take_unknown();
+            if !unknown_token.is_empty() {
+                let byte_length = unknown_token.len();
+                self.emit_token(
+                    tokens,
+                    locations,
+                    Token::Unknown(unknown_token),
+                    byte_length,
+                    code_point_length,
+                )
+            }
+        }
+    }
+
+    let mut state = State {
+        offset: 0,
+        line: DEFAULT_LOCATION_NUMBER,
+        column: DEFAULT_LOCATION_NUMBER,
+        buffer: CharBuffer::with_capacity(256),
+    };
+
+    let mut input_code_points = input.into();
+    let mut tokens = Vec::new();
+    let mut locations = LocationMap(hash_map::HashMap::new());
+
+    while let Some(code_point) = input_code_points.next()? {
+        state.offset += code_point.len_utf8();
+        state.buffer.push(code_point);
+
+        let mut best_result = MatchResult::Failure;
+        for (character_match, ref mut start) in matches.iter_mut() {
+            let result = character_match(code_point, *start, &mut state);
+
+            match result {
+                MatchResult::Continue | MatchResult::Success(_, _) => {
+                    best_result = result;
+                    *start += 1
+                }
+                MatchResult::Failure => *start = 0,
+            }
+        }
+
+        match best_result {
+            MatchResult::Continue => (),
+            MatchResult::Failure => state.buffer.unknown_code_points += 1,
+            MatchResult::Success(token, token_length) => {
+                state.emit_unknown_token(&mut tokens, &mut locations);
+                state.emit_token(
+                    &mut tokens,
+                    &mut locations,
+                    token,
+                    token_length,
+                    state.buffer.code_point_length,
+                );
+                matches.iter_mut().for_each(|(_, start)| *start = 0);
+            }
+        }
+    }
+
+    state.emit_unknown_token(&mut tokens, &mut locations);
+
+    Ok((tokens, locations))
 }
 
 #[cfg(test)]
@@ -212,12 +274,31 @@ mod tests {
 
     #[test]
     fn empty() {
-        assert_eq!(tokenize("".chars()).0, Vec::new())
+        assert_eq!(
+            tokenize::<IteratorInput<_>, _>("".chars()).unwrap().0,
+            Vec::new()
+        )
+    }
+
+    #[test]
+    fn simple_characters() {
+        let (tokens, locations) = tokenize::<IteratorInput<_>, _>("(){}".chars()).unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                (Token::OpenParenthesis, 0),
+                (Token::CloseParenthesis, 1),
+                (Token::OpenBracket, 2),
+                (Token::CloseBracket, 3),
+            ]
+        )
     }
 
     #[test]
     fn single_line() {
-        let (tokens, locations) = tokenize("function my_function_name () =".chars());
+        let (tokens, locations) =
+            tokenize::<IteratorInput<_>, _>("function my_function_name () =".chars()).unwrap();
 
         assert_eq!(
             tokens,
@@ -234,10 +315,10 @@ mod tests {
         )
     }
 
-    #[test]
-    fn multiple_lines() {
-        let (tokens, locations) = tokenize("function test () =\n    ()\n".chars());
-        dbg!(tokens);
-        todo!()
-    }
+    // #[test]
+    // fn multiple_lines() {
+    //     let (tokens, locations) = tokenize("function test () =\n    ()\n".chars());
+    //     dbg!(tokens);
+    //     todo!()
+    // }
 }
