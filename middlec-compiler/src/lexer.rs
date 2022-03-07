@@ -105,6 +105,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
     let mut locations = LocationMap(hash_map::HashMap::new());
     let mut column = DEFAULT_LOCATION_NUMBER;
     let mut line = DEFAULT_LOCATION_NUMBER;
+    let mut indentation_level = 0usize;
 
     macro_rules! emit_token {
         ($token: expr) => {{
@@ -130,7 +131,29 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                 .checked_add(1)
                 .and_then(LocationNum::new)
                 .expect("line number overflow");
-        } else { // TODO: Add else if for handling whitespace if column number == DEFAULT
+        } else if code_point.is_whitespace() && column > DEFAULT_LOCATION_NUMBER {
+            if !characters.is_empty() {
+                emit_token!(Token::Unknown(characters.clone()));
+            }
+
+            column = LocationNum::new(column.get() + 1).expect("column overflow");
+
+            // // TODO: Collect whitespace instead.
+            // let indentation_amount = if code_point != '\t' {
+            //     1usize
+            // } else {
+            //     todo!("special handling for calculating indentation when code point is tab")
+            // };
+
+            // indentation_level = indentation_amount;
+
+            // if indentation_amount < indentation_level {
+            //     emit_token!(Token::Dedent);
+            // } else if indentation_amount > indentation_level {
+            //     emit_token!(Token::Indent);
+            // }
+        } else {
+            // TODO: Add else if for handling whitespace if column number == DEFAULT
             let mut best_result = MatchResult::Failure;
 
             for character_match in current_matches {
@@ -149,19 +172,19 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                 MatchResult::Failure => unknown_length += 1,
                 MatchResult::Success(token) => {
                     if unknown_length > 0 {
-                        unknown_length = 0;
-
                         emit_token!(Token::Unknown(
                             characters.chars().take(unknown_length).collect()
                         ));
 
                         column = LocationNum::new(column.get() + unknown_length)
                             .expect("column overflow");
+
+                        unknown_length = 0;
                     }
 
+                    let next_column = column.get() + characters.chars().count();
                     emit_token!(token);
-                    column = LocationNum::new(column.get() + characters.chars().count())
-                        .expect("column overflow");
+                    column = LocationNum::new(next_column).expect("column overflow");
                 }
             }
         }
@@ -185,8 +208,10 @@ mod tests {
 
     #[test]
     fn single_line() {
+        let (tokens, locations) = tokenize("function my_function_name () =".chars());
+
         assert_eq!(
-            tokenize("function my_function_name () =".chars()).0,
+            tokens,
             vec![
                 (Token::Function, 0),
                 (
@@ -202,6 +227,8 @@ mod tests {
 
     #[test]
     fn multiple_lines() {
+        let (tokens, locations) = tokenize("function test () =\n    ()\n".chars());
+        dbg!(tokens);
         todo!()
     }
 }
