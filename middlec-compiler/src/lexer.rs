@@ -50,6 +50,9 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
         Failure,
     }
 
+    //struct State
+
+    // TODO: Make this a simple type alias.
     /// Matches against a character in the input, taking an offset from the start of the token.
     struct Match(fn(char, usize, &mut &'static [Match]) -> MatchResult);
 
@@ -88,6 +91,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
         }};
     }
 
+    // Matches further down have higher priority.
     static DEFAULT_MATCHES: &[Match] = &[
         string_match!(['f', 'u', 'n', 'c', 't', 'i', 'o', 'n'], Function),
         character_match!('{', OpenBracket),
@@ -136,6 +140,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
 
             if !characters.is_empty() {
                 emit_token!(Token::Unknown(characters.clone()));
+                unknown_length = 0;
             }
 
             column = LocationNum::new(column.get() + 1 + unknown_length).expect("column overflow");
