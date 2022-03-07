@@ -132,11 +132,13 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                 .and_then(LocationNum::new)
                 .expect("line number overflow");
         } else if code_point.is_whitespace() && column > DEFAULT_LOCATION_NUMBER {
+            debug_assert_eq!(characters.chars().count(), unknown_length);
+
             if !characters.is_empty() {
                 emit_token!(Token::Unknown(characters.clone()));
             }
 
-            column = LocationNum::new(column.get() + 1).expect("column overflow");
+            column = LocationNum::new(column.get() + 1 + unknown_length).expect("column overflow");
 
             // // TODO: Collect whitespace instead.
             // let indentation_amount = if code_point != '\t' {
@@ -153,7 +155,6 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
             //     emit_token!(Token::Indent);
             // }
         } else {
-            // TODO: Add else if for handling whitespace if column number == DEFAULT
             let mut best_result = MatchResult::Failure;
 
             for character_match in current_matches {
