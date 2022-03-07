@@ -56,9 +56,14 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
                 static EXPECTED_STRING: &[char] = &$string;
 
                 match EXPECTED_STRING.get(index) {
-                    None => MatchResult::Success(Token::$token),
-                    Some(expected) if *expected == c => MatchResult::Continue,
-                    Some(_) => MatchResult::Failure,
+                    Some(expected) if *expected == c => {
+                        if index == EXPECTED_STRING.len() - 1 {
+                            MatchResult::Success(Token::$token)
+                        } else {
+                            MatchResult::Continue
+                        }
+                    }
+                    Some(_) | None => MatchResult::Failure,
                 }
             }
         };
@@ -77,6 +82,7 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
 
     let mut characters = String::new();
     let mut current_matches = DEFAULT_MATCHES;
+    let mut unknown_length = 0usize;
     let mut offset = 0usize;
     let mut tokens = Vec::new();
     let mut locations = LocationMap(hash_map::HashMap::new());
@@ -85,13 +91,11 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
 
     macro_rules! emit_token {
         ($token: expr) => {{
-            dbg!(&offset, &characters);
             let actual_offset = offset - characters.len();
             locations.0.insert(actual_offset, Location { line, column });
             tokens.push(($token, actual_offset));
             characters.clear();
-            column = LocationNum::new(column.get() + characters.chars().count())
-                .expect("column overflow");
+            unknown_length = 0;
         }};
     }
 
@@ -124,10 +128,21 @@ pub fn tokenize<I: std::iter::IntoIterator<Item = char>>(
 
             match result {
                 MatchResult::Continue => (),
-                MatchResult::Failure => {
-                    emit_token!(Token::Unknown(characters.clone()));
+                MatchResult::Failure => unknown_length += 1,
+                MatchResult::Success(token) => {
+                    if unknown_length > 0 {
+                        emit_token!(Token::Unknown(
+                            characters.chars().take(unknown_length).collect()
+                        ));
+                        
+                        column = LocationNum::new(column.get() + unknown_length)
+                            .expect("column overflow");
+                    }
+
+                    emit_token!(token);
+                    column = LocationNum::new(column.get() + characters.chars().count())
+                        .expect("column overflow");
                 }
-                MatchResult::Success(token) => emit_token!(token),
             }
         }
     }
