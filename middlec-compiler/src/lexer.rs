@@ -73,7 +73,7 @@ impl Default for Location {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LocationMapEntry {
     offset: usize,
     line: LocationNumber,
@@ -100,7 +100,7 @@ impl std::iter::ExactSizeIterator for LocationIter<'_> {
 }
 
 /// Maps a byte offset into a UTF-8 source file to a line and column number.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LocationMap {
     entries: Vec<LocationMapEntry>,
 }
@@ -185,8 +185,24 @@ fn push_new_line(lexer: &mut logos::Lexer<Token>) -> logos::Skip {
     logos::Skip
 }
 
+#[derive(Clone, Debug)]
+pub struct Output {
+    tokens: Vec<(Token, std::ops::Range<usize>)>,
+    locations: LocationMap,
+}
+
+impl Output {
+    pub fn tokens(&self) -> &[(Token, std::ops::Range<usize>)] {
+        &self.tokens
+    }
+
+    pub fn locations(&self) -> &LocationMap {
+        &self.locations
+    }
+}
+
 /// Turns an input string into a sequence of tokens paired with their corresponding byte ranges.
-pub fn tokenize(input: &str) -> (Vec<(Token, std::ops::Range<usize>)>, LocationMap) {
+pub fn tokenize(input: &str) -> Output {
     let mut tokens = Vec::with_capacity(256);
     let mut lexer = Token::lexer(input);
 
@@ -194,7 +210,10 @@ pub fn tokenize(input: &str) -> (Vec<(Token, std::ops::Range<usize>)>, LocationM
         tokens.push((next_token, lexer.span()));
     }
 
-    (tokens, lexer.extras.lookup)
+    Output {
+        tokens,
+        locations: lexer.extras.lookup,
+    }
 }
 
 #[cfg(test)]
@@ -215,16 +234,16 @@ mod tests {
 
     #[test]
     fn empty() {
-        assert_eq!(tokenize("").0, Vec::new())
+        assert_eq!(tokenize("").tokens(), &[])
     }
 
     #[test]
     fn single_line() {
-        let (tokens, locations) = tokenize("func my_function_name () {}");
+        let output = tokenize("func my_function_name () {}");
 
         assert_eq!(
-            tokens,
-            vec![
+            output.tokens(),
+            &[
                 (Token::FunctionDefinition, 0..4),
                 (Token::new_identifier("my_function_name").unwrap(), 5..21),
                 (Token::OpenParenthesis, 22..23),
@@ -234,16 +253,16 @@ mod tests {
             ]
         );
 
-        assert_location_eq!(locations, 0, 1, 1);
-        assert_location_eq!(locations, 5, 1, 6);
+        assert_location_eq!(output.locations(), 0, 1, 1);
+        assert_location_eq!(output.locations(), 5, 1, 6);
     }
 
     #[test]
     fn multiple_lines() {
-        let (tokens, locations) = tokenize("{\n    (\n}\n\nfunc\n");
+        let output = tokenize("{\n    (\n}\n\nfunc\n");
 
         assert_eq!(
-            tokens,
+            output.tokens(),
             vec![
                 (Token::OpenCurlyBracket, 0..1),
                 (Token::OpenParenthesis, 6..7),
@@ -252,7 +271,8 @@ mod tests {
             ]
         );
 
-        let line_numbers = locations
+        let line_numbers = output
+            .locations()
             .iter_over(0..16)
             .map(|location| (location.line.get(), location.column.get()))
             .collect::<Vec<_>>();
