@@ -25,7 +25,6 @@ impl Default for Location {
 #[derive(Debug)]
 struct LocationMapEntry {
     offset: usize,
-    byte_length: usize,
     line: LocationNumber,
 }
 
@@ -37,37 +36,36 @@ pub struct LocationMap {
 
 impl LocationMap {
     pub fn get_location(&self, offset: usize) -> Location {
-        let entry_index = self.entries.binary_search_by(|entry| {
-            if offset >= entry.offset && offset < entry.offset + entry.byte_length {
-                std::cmp::Ordering::Equal
-            } else if entry.offset < offset {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            }
-        });
+        let entry_index = self
+            .entries
+            .binary_search_by(|entry| entry.offset.cmp(&offset));
 
         let line;
         // NOTE: Currently, the column number is not calculated correctly for multi-byte characters.
         let column;
-        
+
         match entry_index {
-            Ok(index) => {
-                // Index is guaranteed to point to a valid entry.
-                let entry = unsafe { self.entries.get_unchecked(index) };
+            Ok(exact_index) => {
+                // The offset is to a new line character, so the index is guaranteed to point to a valid entry.
+                let entry = unsafe { self.entries.get_unchecked(exact_index) };
                 line = entry.line;
                 column = offset - entry.offset + 1;
-            },
+            }
             Err(index) => {
                 if index == 0 || self.entries.is_empty() {
+                    // Offset is to a character in the first line of the source file.
                     line = DEFAULT_LOCATION_NUMBER;
                     column = offset + 1;
                 } else {
-                    // The entries are guaranteed to not be empty.
-                    let last = unsafe { self.entries.get_unchecked(self.entries.len() - 1) };
-                    line = last.line;
-                    dbg!(offset, last);
-                    column = offset - last.offset + 1;
+                    let entry = self.entries.get(index - 1).expect("valid entry");
+                    column = offset - entry.offset;
+
+                    line = if index < self.entries.len() {
+                        // Offset is to a character that is not in the last line.
+                        entry.line
+                    } else {
+                        LocationNumber::new(entry.line.get() + 1).expect("line number overflow")
+                    };
                 }
             }
         }
@@ -96,13 +94,11 @@ impl Default for LocationMapBuilder {
 }
 
 fn push_new_line(lexer: &mut logos::Lexer<Token>) -> logos::Skip {
-    let byte_length = lexer.slice().len();
     let start_offset = lexer.span().start;
     let builder = &mut lexer.extras;
 
     builder.lookup.entries.push(LocationMapEntry {
         offset: start_offset,
-        byte_length,
         line: LocationNumber::new(builder.next.line.get() + 1).expect("line number overflow"),
     });
 
@@ -141,6 +137,7 @@ impl Token {
     }
 }
 
+/// Turns an input string into a sequence of tokens paired with their corresponding byte ranges.
 pub fn tokenize(input: &str) -> (Vec<(Token, std::ops::Range<usize>)>, LocationMap) {
     let mut tokens = Vec::with_capacity(256);
     let mut lexer = Token::lexer(input);
@@ -208,5 +205,6 @@ mod tests {
 
         assert_location_eq!(locations, 0, 1, 1);
         assert_location_eq!(locations, 6, 2, 5);
+        assert_location_eq!(locations, 8, 3, 1);
     }
 }
