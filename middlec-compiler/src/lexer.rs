@@ -28,6 +28,26 @@ struct LocationMapEntry {
     line: LocationNumber,
 }
 
+#[derive(Clone, Debug)]
+pub struct LocationIter<'a> {
+    lookup: &'a LocationMap,
+    range: std::ops::Range<usize>,
+}
+
+impl std::iter::Iterator for LocationIter<'_> {
+    type Item = Location;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.lookup.get_location(self.range.next()?))
+    }
+}
+
+impl std::iter::ExactSizeIterator for LocationIter<'_> {
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+}
+
 /// Maps a byte offset into a UTF-8 source file to a line and column number.
 #[derive(Debug)]
 pub struct LocationMap {
@@ -58,7 +78,7 @@ impl LocationMap {
                     column = offset + 1;
                 } else {
                     let entry = self.entries.get(index - 1).expect("valid entry");
-                    column = offset - entry.offset;
+                    column = offset - entry.offset + 1;
 
                     line = if index < self.entries.len() {
                         // Offset is to a character that is not in the last line.
@@ -75,11 +95,18 @@ impl LocationMap {
             column: LocationNumber::new(column).expect("column number overflow"),
         }
     }
+
+    pub fn iter_over(&self, offsets: std::ops::Range<usize>) -> LocationIter {
+        LocationIter {
+            lookup: self,
+            range: offsets,
+        }
+    }
 }
 
 pub struct LocationMapBuilder {
     lookup: LocationMap,
-    next: Location,
+    next_line_number: LocationNumber,
 }
 
 impl Default for LocationMapBuilder {
@@ -88,7 +115,7 @@ impl Default for LocationMapBuilder {
             lookup: LocationMap {
                 entries: Vec::default(),
             },
-            next: Location::default(),
+            next_line_number: DEFAULT_LOCATION_NUMBER,
         }
     }
 }
@@ -97,9 +124,11 @@ fn push_new_line(lexer: &mut logos::Lexer<Token>) -> logos::Skip {
     let start_offset = lexer.span().start;
     let builder = &mut lexer.extras;
 
+    builder.next_line_number =
+        LocationNumber::new(builder.next_line_number.get() + 1).expect("line number overflow");
     builder.lookup.entries.push(LocationMapEntry {
         offset: start_offset,
-        line: LocationNumber::new(builder.next.line.get() + 1).expect("line number overflow"),
+        line: builder.next_line_number,
     });
 
     logos::Skip
@@ -192,19 +221,43 @@ mod tests {
 
     #[test]
     fn multiple_lines() {
-        let (tokens, locations) = tokenize("{\n    (\n}");
+        let (tokens, locations) = tokenize("{\n    (\n}\n\nfunc\n");
 
         assert_eq!(
             tokens,
             vec![
                 (Token::OpenBracket, 0..1),
                 (Token::OpenParenthesis, 6..7),
-                (Token::CloseBracket, 8..9)
+                (Token::CloseBracket, 8..9),
+                (Token::FunctionDefinition, 11..15)
             ]
         );
 
-        assert_location_eq!(locations, 0, 1, 1);
-        assert_location_eq!(locations, 6, 2, 5);
-        assert_location_eq!(locations, 8, 3, 1);
+        let line_numbers = locations
+            .iter_over(0..16)
+            .map(|location| (location.line.get(), location.column.get()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            line_numbers,
+            vec![
+                (1, 1),
+                (2, 1),
+                (2, 2),
+                (2, 3),
+                (2, 4),
+                (2, 5),
+                (2, 6),
+                (3, 1),
+                (3, 2),
+                (4, 1),
+                (5, 1),
+                (5, 2),
+                (5, 3),
+                (5, 4),
+                (5, 5),
+                (6, 1),
+            ]
+        );
     }
 }
