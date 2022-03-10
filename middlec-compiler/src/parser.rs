@@ -1,9 +1,33 @@
 //! Transforms a sequence of tokens into an abstract syntax tree.
 
-use crate::{ast, lexer};
+use crate::{ast, lexer, location::Location};
 
-#[derive(Debug)]
-pub enum Error {}
+type Tokens<'a, 'b> = &'b mut lexer::LocatedIter<'a>;
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    #[error("unexpected {0:?}")]
+    UnknownToken(lexer::Token),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{location}: {kind}")]
+pub struct Error {
+    #[source]
+    kind: ErrorKind,
+    location: Location,
+}
+
+impl Error {
+    pub fn kind(&self) -> &ErrorKind {
+        &self.kind
+    }
+
+    pub fn location(&self) -> &Location {
+        &self.location
+    }
+}
 
 #[derive(Debug)]
 pub struct Output {
@@ -29,7 +53,8 @@ impl Output {
     }
 }
 
-pub fn parse(tokens: lexer::Output) -> Output {
+pub fn parse(tokens: &lexer::Output) -> Output {
+    let mut input = tokens.located();
     todo!()
 }
 

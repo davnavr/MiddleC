@@ -63,6 +63,32 @@ fn push_new_line(lexer: &mut logos::Lexer<Token>) -> logos::Skip {
     logos::Skip
 }
 
+/// An iterator over tokens paired with their line and column numbers in the original source file.
+///
+/// See [`Output::located`] for more information.
+#[derive(Clone, Debug)]
+pub struct LocatedIter<'a> {
+    tokens: std::slice::Iter<'a, (Token, std::ops::Range<usize>)>,
+    locations: &'a location::Map,
+}
+
+impl<'a> std::iter::Iterator for LocatedIter<'a> {
+    type Item = (&'a Token, location::Location);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (token, offset) = self.tokens.next()?;
+        Some((token, self.locations.get_location(offset.start)))
+    }
+}
+
+impl std::iter::ExactSizeIterator for LocatedIter<'_> {
+    fn len(&self) -> usize {
+        self.tokens.len()
+    }
+}
+
+impl std::iter::FusedIterator for LocatedIter<'_> {}
+
 #[derive(Clone, Debug)]
 pub struct Output {
     tokens: Vec<(Token, std::ops::Range<usize>)>,
@@ -76,6 +102,13 @@ impl Output {
 
     pub fn locations(&self) -> &location::Map {
         &self.locations
+    }
+
+    pub fn located(&self) -> LocatedIter {
+        LocatedIter {
+            tokens: self.tokens.iter(),
+            locations: &self.locations,
+        }
     }
 }
 

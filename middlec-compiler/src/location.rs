@@ -1,3 +1,5 @@
+//! Contains code for keeping track of line and column numbers.
+
 pub use std::num::NonZeroUsize as Number;
 
 pub const DEFAULT: Number = unsafe { Number::new_unchecked(1) };
@@ -7,6 +9,12 @@ pub const DEFAULT: Number = unsafe { Number::new_unchecked(1) };
 pub struct Location {
     pub line: Number,
     pub column: Number,
+}
+
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "({}, {})", self.line, self.column)
+    }
 }
 
 impl Default for Location {
@@ -24,6 +32,9 @@ struct MapEntry {
     line: Number,
 }
 
+/// An iterator over the line and column numbers of a source file.
+///
+/// See [`Map::iter_over`] for more information.
 #[derive(Clone, Debug)]
 pub struct Iter<'a> {
     lookup: &'a Map,
@@ -43,6 +54,8 @@ impl std::iter::ExactSizeIterator for Iter<'_> {
         self.range.len()
     }
 }
+
+impl std::iter::FusedIterator for Iter<'_> {}
 
 /// Maps a byte offset into a UTF-8 source file to a line and column number.
 #[derive(Clone, Debug)]
