@@ -4,6 +4,57 @@ use logos::Logos;
 pub use sailar::format::Identifier;
 pub use std::num::NonZeroUsize as LocationNumber;
 
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, Logos, PartialEq)]
+#[logos(extras = LocationMapBuilder)]
+pub enum Token {
+    #[token("{")]
+    OpenCurlyBracket,
+    #[token("}")]
+    CloseCurlyBracket,
+    #[token("(")]
+    OpenParenthesis,
+    #[token(")")]
+    CloseParenthesis,
+    #[token("[")]
+    OpenSquareBracket,
+    #[token("]")]
+    OpenCloseBracket,
+    #[token("=")]
+    Equals,
+    #[token(".")]
+    Period,
+    #[token(",")]
+    Comma,
+    #[token(";")]
+    Semicolon,
+    /// Indicates the return type of a function.
+    #[token("->")]
+    Arrow,
+    #[regex(r"[a-zA-Z_][a-zA-Z_0-9]*", |lex| Identifier::try_from(lex.slice()))]
+    Identifier(Identifier),
+    #[token("func")]
+    FunctionDefinition,
+    #[token("namespace")]
+    NamespaceDeclaration,
+    #[token("use")]
+    UseDeclaration,
+    #[token("struct")]
+    StructDefinition,
+    #[token("::")]
+    DoubleColon,
+    #[regex(r"[ \t\r]+", logos::skip)]
+    #[token("\n", push_new_line)]
+    #[error]
+    Unknown,
+}
+
+impl Token {
+    pub fn new_identifier<S: TryInto<Identifier>>(identifier: S) -> Option<Self> {
+        identifier.try_into().ok().map(Token::Identifier)
+    }
+}
+
 pub const DEFAULT_LOCATION_NUMBER: LocationNumber = unsafe { LocationNumber::new_unchecked(1) };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -134,38 +185,6 @@ fn push_new_line(lexer: &mut logos::Lexer<Token>) -> logos::Skip {
     logos::Skip
 }
 
-#[non_exhaustive]
-#[derive(Clone, Debug, Eq, Logos, PartialEq)]
-#[logos(extras = LocationMapBuilder)]
-pub enum Token {
-    #[token("{")]
-    OpenBracket,
-    #[token("}")]
-    CloseBracket,
-    #[token("(")]
-    OpenParenthesis,
-    #[token(")")]
-    CloseParenthesis,
-    #[token("=")]
-    Equals,
-    #[token(".")]
-    Period,
-    #[regex(r"[a-zA-Z_][a-zA-Z_0-9]*", |lex| Identifier::try_from(lex.slice()))]
-    Identifier(Identifier),
-    #[token("func")]
-    FunctionDefinition,
-    #[regex(r"[ \t\r]+", logos::skip)]
-    #[token("\n", push_new_line)]
-    #[error]
-    Unknown,
-}
-
-impl Token {
-    pub fn new_identifier<S: TryInto<Identifier>>(identifier: S) -> Option<Self> {
-        identifier.try_into().ok().map(Token::Identifier)
-    }
-}
-
 /// Turns an input string into a sequence of tokens paired with their corresponding byte ranges.
 pub fn tokenize(input: &str) -> (Vec<(Token, std::ops::Range<usize>)>, LocationMap) {
     let mut tokens = Vec::with_capacity(256);
@@ -210,8 +229,8 @@ mod tests {
                 (Token::new_identifier("my_function_name").unwrap(), 5..21),
                 (Token::OpenParenthesis, 22..23),
                 (Token::CloseParenthesis, 23..24),
-                (Token::OpenBracket, 25..26),
-                (Token::CloseBracket, 26..27)
+                (Token::OpenCurlyBracket, 25..26),
+                (Token::CloseCurlyBracket, 26..27)
             ]
         );
 
@@ -226,9 +245,9 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                (Token::OpenBracket, 0..1),
+                (Token::OpenCurlyBracket, 0..1),
                 (Token::OpenParenthesis, 6..7),
-                (Token::CloseBracket, 8..9),
+                (Token::CloseCurlyBracket, 8..9),
                 (Token::FunctionDefinition, 11..15)
             ]
         );
