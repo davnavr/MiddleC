@@ -36,28 +36,46 @@ pub struct LocationMap {
 }
 
 impl LocationMap {
-    pub fn get_location(&self, offset: usize) -> Option<Location> {
-        let index = self
-            .entries
-            .binary_search_by(|entry| {
-                if entry.offset >= offset && offset < entry.offset + entry.byte_length {
-                    std::cmp::Ordering::Equal
-                } else if entry.offset < offset {
-                    std::cmp::Ordering::Less
+    pub fn get_location(&self, offset: usize) -> Location {
+        let entry_index = self.entries.binary_search_by(|entry| {
+            if offset >= entry.offset && offset < entry.offset + entry.byte_length {
+                std::cmp::Ordering::Equal
+            } else if entry.offset < offset {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+
+        let line;
+        // NOTE: Currently, the column number is not calculated correctly for multi-byte characters.
+        let column;
+        
+        match entry_index {
+            Ok(index) => {
+                // Index is guaranteed to point to a valid entry.
+                let entry = unsafe { self.entries.get_unchecked(index) };
+                line = entry.line;
+                column = offset - entry.offset + 1;
+            },
+            Err(index) => {
+                if index == 0 || self.entries.is_empty() {
+                    line = DEFAULT_LOCATION_NUMBER;
+                    column = offset + 1;
                 } else {
-                    std::cmp::Ordering::Greater
+                    // The entries are guaranteed to not be empty.
+                    let last = unsafe { self.entries.get_unchecked(self.entries.len() - 1) };
+                    line = last.line;
+                    dbg!(offset, last);
+                    column = offset - last.offset + 1;
                 }
-            })
-            .ok()?;
+            }
+        }
 
-        // Index is guaranteed to point to a valid entry.
-        let entry = unsafe { self.entries.get_unchecked(index) };
-
-        Some(Location {
-            line: entry.line,
-            // NOTE: Currently, the column number is not calculated correctly for multi-byte characters.
-            column: LocationNumber::new(offset - entry.offset + 1).expect("column number overflow"),
-        })
+        Location {
+            line,
+            column: LocationNumber::new(column).expect("column number overflow"),
+        }
     }
 }
 
@@ -138,6 +156,18 @@ pub fn tokenize(input: &str) -> (Vec<(Token, std::ops::Range<usize>)>, LocationM
 mod tests {
     use super::*;
 
+    macro_rules! assert_location_eq {
+        ($locations: expr, $offset: expr, $expected_line: expr, $expected_column: expr) => {{
+            assert_eq!(
+                $locations.get_location($offset),
+                Location {
+                    line: LocationNumber::new($expected_line).expect("invalid line number"),
+                    column: LocationNumber::new($expected_column).expect("invalid column number")
+                }
+            )
+        }};
+    }
+
     #[test]
     fn empty() {
         assert_eq!(tokenize("").0, Vec::new())
@@ -157,6 +187,26 @@ mod tests {
                 (Token::OpenBracket, 25..26),
                 (Token::CloseBracket, 26..27)
             ]
-        )
+        );
+
+        assert_location_eq!(locations, 0, 1, 1);
+        assert_location_eq!(locations, 5, 1, 6);
+    }
+
+    #[test]
+    fn multiple_lines() {
+        let (tokens, locations) = tokenize("{\n    (\n}");
+
+        assert_eq!(
+            tokens,
+            vec![
+                (Token::OpenBracket, 0..1),
+                (Token::OpenParenthesis, 6..7),
+                (Token::CloseBracket, 8..9)
+            ]
+        );
+
+        assert_location_eq!(locations, 0, 1, 1);
+        assert_location_eq!(locations, 6, 2, 5);
     }
 }
