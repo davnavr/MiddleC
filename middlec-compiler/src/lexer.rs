@@ -1,4 +1,5 @@
 //! Contains functions for turning source code into tokens.
+
 use logos::Logos;
 
 pub use sailar::format::Identifier;
