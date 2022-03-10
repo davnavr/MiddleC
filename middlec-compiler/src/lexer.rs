@@ -1,5 +1,6 @@
 //! Contains functions for turning source code into tokens.
 
+use crate::location;
 use logos::Logos;
 
 pub use sailar::format::Identifier;
@@ -7,7 +8,7 @@ pub use std::num::NonZeroUsize as LocationNumber;
 
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, Logos, PartialEq)]
-#[logos(extras = LocationMapBuilder)]
+#[logos(extras = location::MapBuilder)]
 pub enum Token {
     #[token("{")]
     OpenCurlyBracket,
@@ -56,140 +57,16 @@ impl Token {
     }
 }
 
-pub const DEFAULT_LOCATION_NUMBER: LocationNumber = unsafe { LocationNumber::new_unchecked(1) };
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct Location {
-    pub line: LocationNumber,
-    pub column: LocationNumber,
-}
-
-impl Default for Location {
-    fn default() -> Self {
-        Self {
-            line: DEFAULT_LOCATION_NUMBER,
-            column: DEFAULT_LOCATION_NUMBER,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct LocationMapEntry {
-    offset: usize,
-    line: LocationNumber,
-}
-
-#[derive(Clone, Debug)]
-pub struct LocationIter<'a> {
-    lookup: &'a LocationMap,
-    range: std::ops::Range<usize>,
-}
-
-impl std::iter::Iterator for LocationIter<'_> {
-    type Item = Location;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some(self.lookup.get_location(self.range.next()?))
-    }
-}
-
-impl std::iter::ExactSizeIterator for LocationIter<'_> {
-    fn len(&self) -> usize {
-        self.range.len()
-    }
-}
-
-/// Maps a byte offset into a UTF-8 source file to a line and column number.
-#[derive(Clone, Debug)]
-pub struct LocationMap {
-    entries: Vec<LocationMapEntry>,
-}
-
-impl LocationMap {
-    pub fn get_location(&self, offset: usize) -> Location {
-        let entry_index = self
-            .entries
-            .binary_search_by(|entry| entry.offset.cmp(&offset));
-
-        let line;
-        // NOTE: Currently, the column number is not calculated correctly for multi-byte characters.
-        let column;
-
-        match entry_index {
-            Ok(exact_index) => {
-                // The offset is to a new line character, so the index is guaranteed to point to a valid entry.
-                let entry = unsafe { self.entries.get_unchecked(exact_index) };
-                line = entry.line;
-                column = offset - entry.offset + 1;
-            }
-            Err(index) => {
-                if index == 0 || self.entries.is_empty() {
-                    // Offset is to a character in the first line of the source file.
-                    line = DEFAULT_LOCATION_NUMBER;
-                    column = offset + 1;
-                } else {
-                    let entry = self.entries.get(index - 1).expect("valid entry");
-                    column = offset - entry.offset + 1;
-
-                    line = if index < self.entries.len() {
-                        // Offset is to a character that is not in the last line.
-                        entry.line
-                    } else {
-                        LocationNumber::new(entry.line.get() + 1).expect("line number overflow")
-                    };
-                }
-            }
-        }
-
-        Location {
-            line,
-            column: LocationNumber::new(column).expect("column number overflow"),
-        }
-    }
-
-    pub fn iter_over(&self, offsets: std::ops::Range<usize>) -> LocationIter {
-        LocationIter {
-            lookup: self,
-            range: offsets,
-        }
-    }
-}
-
-pub struct LocationMapBuilder {
-    lookup: LocationMap,
-    next_line_number: LocationNumber,
-}
-
-impl Default for LocationMapBuilder {
-    fn default() -> Self {
-        Self {
-            lookup: LocationMap {
-                entries: Vec::default(),
-            },
-            next_line_number: DEFAULT_LOCATION_NUMBER,
-        }
-    }
-}
-
 fn push_new_line(lexer: &mut logos::Lexer<Token>) -> logos::Skip {
     let start_offset = lexer.span().start;
-    let builder = &mut lexer.extras;
-
-    builder.next_line_number =
-        LocationNumber::new(builder.next_line_number.get() + 1).expect("line number overflow");
-    builder.lookup.entries.push(LocationMapEntry {
-        offset: start_offset,
-        line: builder.next_line_number,
-    });
-
+    lexer.extras.push(start_offset);
     logos::Skip
 }
 
 #[derive(Clone, Debug)]
 pub struct Output {
     tokens: Vec<(Token, std::ops::Range<usize>)>,
-    locations: LocationMap,
+    locations: location::Map,
 }
 
 impl Output {
@@ -197,7 +74,7 @@ impl Output {
         &self.tokens
     }
 
-    pub fn locations(&self) -> &LocationMap {
+    pub fn locations(&self) -> &location::Map {
         &self.locations
     }
 }
@@ -213,7 +90,7 @@ pub fn tokenize(input: &str) -> Output {
 
     Output {
         tokens,
-        locations: lexer.extras.lookup,
+        locations: lexer.extras.finish(),
     }
 }
 
@@ -225,7 +102,7 @@ mod tests {
         ($locations: expr, $offset: expr, $expected_line: expr, $expected_column: expr) => {{
             assert_eq!(
                 $locations.get_location($offset),
-                Location {
+                location::Location {
                     line: LocationNumber::new($expected_line).expect("invalid line number"),
                     column: LocationNumber::new($expected_column).expect("invalid column number")
                 }

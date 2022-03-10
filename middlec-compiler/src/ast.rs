@@ -6,7 +6,7 @@ pub use sailar::format::{instruction_set::IntegerConstant as LiteralInteger, Ide
 #[non_exhaustive]
 pub struct Node<N> {
     pub node: N,
-    //pub position:
+    pub position: crate::location::Location,
 }
 
 #[derive(Debug, Eq, PartialEq)]

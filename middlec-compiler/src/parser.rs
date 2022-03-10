@@ -29,6 +29,8 @@ impl Output {
     }
 }
 
-pub fn parse(tokens: lexer::Output) -> Output {}
+pub fn parse(tokens: lexer::Output) -> Output {
+    todo!()
+}
 
 // TODO: Have property tests that generates AST -> calls Display -> parses output -> etc.
