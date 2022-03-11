@@ -60,12 +60,26 @@ pub struct Parameter {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub struct NamespaceIdentifier(Vec<Node<Identifier>>);
+
+impl NamespaceIdentifier {
+    /// Creates a new namespace identifier without checking that the identifiers are not empty.
+    pub const unsafe fn new_unchecked(identifiers: Vec<Node<Identifier>>) -> Self {
+        Self(identifiers)
+    }
+
+    pub fn identifiers(&self) -> &Vec<Node<Identifier>> {
+        &self.0
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Declaration {
-    // Namespace {
-    //     name: Vec<Node<Name>>,
-    //     items: Declaration,
-    // },
+    Namespace {
+        name: NamespaceIdentifier,
+        declarations: Vec<Declaration>,
+    },
     Function(Function),
 }
 
@@ -130,6 +144,13 @@ fn display_separated_by<T: Display, S: Display>(
     display_separated(items, |_, _, f| Display::fmt(&separator, f), f)
 }
 
+fn display_namespace_identifier(
+    namespace: &NamespaceIdentifier,
+    f: &mut Formatter,
+) -> std::fmt::Result {
+    display_separated_by(namespace.identifiers(), "::", f)
+}
+
 impl Display for Expression {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
@@ -180,9 +201,13 @@ impl Display for Function {
 impl Display for Declaration {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
-            Self::Function(declaration) => Display::fmt(declaration, f)?,
+            Self::Namespace { name, declarations } => {
+                display_namespace_identifier(name, f)?;
+                f.write_str(" {\n")?;
+                display_separated_by(declarations, "\n", f)?;
+                f.write_str("\n}")
+            }
+            Self::Function(declaration) => Display::fmt(declaration, f),
         }
-
-        f.write_char('\n')
     }
 }
