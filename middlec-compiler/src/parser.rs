@@ -1,12 +1,79 @@
 //! Transforms a sequence of tokens into an abstract syntax tree.
 
-use crate::{ast, lexer, location::Location};
+use crate::ast;
+use crate::lexer::{self, Token};
+use crate::location::{self, Location};
+use std::fmt::Formatter;
+use std::ops::Range;
+
+fn display_token(token: &Token, f: &mut Formatter) -> std::fmt::Result {
+    f.write_str(match token {
+        Token::Unknown => "unknown",
+        Token::OpenCurlyBracket => "{",
+        Token::CloseCurlyBracket => "}",
+        Token::OpenParenthesis => "(",
+        Token::CloseParenthesis => ")",
+        Token::OpenSquareBracket => "[",
+        Token::CloseSquareBracket => "]",
+        Token::Equals => "=",
+        Token::Period => ".",
+        Token::Comma => ",",
+        Token::Semicolon => ";",
+        Token::Identifier(identifier) => identifier,
+        Token::Arrow => "->",
+        Token::FunctionDefinition => "func",
+        Token::NamespaceDeclaration => "namespace",
+        Token::UseDeclaration => "use",
+        Token::StructDefinition => "struct",
+        Token::DoubleColon => "::",
+    })
+}
+
+#[derive(Debug)]
+pub struct UnexpectedTokenError {
+    expected: &'static [Token],
+    actual: Token,
+}
+
+impl UnexpectedTokenError {
+    pub fn expected(&self) -> &[Token] {
+        self.expected
+    }
+
+    pub fn actual(&self) -> &Token {
+        &self.actual
+    }
+}
+
+impl std::fmt::Display for UnexpectedTokenError {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        f.write_str("expected ")?;
+        for (index, expected) in self.expected.iter().enumerate() {
+            display_token(expected, f)?;
+            if index > 0 {
+                f.write_str(if index == self.expected.len() - 1 {
+                    " or "
+                } else {
+                    ", "
+                })?;
+            }
+        }
+        f.write_str(" but got ")?;
+        display_token(&self.actual, f)
+    }
+}
+
+impl std::error::Error for UnexpectedTokenError {}
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ErrorKind {
-    #[error("unexpected {0:?}")]
-    UnknownToken(lexer::Token),
+    #[error("unexpected end of file")]
+    UnexpectedEndOfFile,
+    #[error(transparent)]
+    UnexpectedToken(#[from] UnexpectedTokenError),
+    #[error("expected identifier but got {0:?}")]
+    TemporaryExpectedIdentifier(Token),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,122 +118,187 @@ impl Output {
     }
 }
 
-trait ErrorHandler {
-    fn push(&mut self, error: Error);
+struct Tokens<'t> {
+    tokens: &'t [(Token, Range<usize>)],
+    locations: &'t location::Map,
 }
 
-impl ErrorHandler for Vec<Error> {
-    fn push(&mut self, error: Error) {
-        Vec::push(self, error)
+impl<'t> Tokens<'t> {
+    fn next(&self) -> (Self, Option<&'t (Token, Range<usize>)>) {
+        let mut tokens = self.tokens.iter();
+        let next = tokens.next();
+        (
+            Self {
+                tokens: tokens.as_slice(),
+                locations: self.locations,
+            },
+            next,
+        )
+    }
+
+    fn current_location(&self) -> Location {
+        // TODO: How to get line and column of last character in file?
+        self.tokens
+            .first()
+            .map(|(_, std::ops::Range { start, .. })| self.locations.get_location(*start))
+            .unwrap_or_default()
     }
 }
 
-type Tokens<'t, 'l> = &'t mut lexer::LocatedIter<'l>;
+// TODO: Could use (Tokens<'t>, Result<T, (Option<T>, Vec<Error>)>) instead to allow efficient retrieval of tokens.
+type MatchResult<'t, T> = Result<(T, Tokens<'t>), (Option<T>, Tokens<'t>, Vec<Error>)>;
 
-/*
-struct Tokens<'a> {
-    tokens: lexer::LocatedIter<'a>,
-    peek_buffer: Vec<(&'a Token, Location)>,
-}
-*/
-
-// NOTE: Having input be a slice would be more convenient, and more functional:
-/*
-// NOTE: This could be used with combine parsers? Each parser could output Result<T, Vec<(ErrorKind, std::ops::Range<usize>)>>.
-struct Tokens<'a> {
-    tokens: &'a [(Token, std::ops::Range<usize>)],
+macro_rules! handle {
+    ($expression: expr) => {
+        $expression.map_err(|(_, remaining, errors)| (None, remaining, errors))?
+    };
 }
 
-enum MatchResult<'a, T> {
-    Success(T, Tokens<'a>),
-    /// Indicates that the parser encountered errors.
-    /// If no errors are specified, then the parser SOMETHING SOMETHING SPECIAL.
-    Failure(Vec<(ErrorKind, std::ops::Range<usize>)>, Tokens<'a>),
+fn parsed_node_at<'t, T>(
+    tokens: Tokens<'t>,
+    node: T,
+    range: &Range<usize>,
+) -> MatchResult<'t, ast::Node<T>> {
+    Ok((
+        ast::Node {
+            node,
+            position: tokens.locations.get_location_range(range),
+        },
+        tokens,
+    ))
 }
-*/
 
-enum MatchResult<T> {
-    Success(T),
-    Failure, // (FnOnce(E) -> ())
-    /// Indicates that the parser should move back.
-    Partial,
+fn single_error(kind: ErrorKind, location: Location) -> Vec<Error> {
+    vec![Error { kind, location }]
 }
 
-/*
-type MatchResult = Result<T, Vec<Error>>;
-*/
+fn single_failure_at<T>(
+    result: Option<T>,
+    remaining: Tokens,
+    kind: ErrorKind,
+    location: Location,
+) -> MatchResult<'_, T> {
+    Err((result, remaining, single_error(kind, location)))
+}
 
-fn match_next_token<T, E, F>(tokens: Tokens, mut errors: E, f: F) -> Option<T>
-where
-    E: ErrorHandler,
-    F: FnOnce(&lexer::Token, &Location) -> Option<T>, // TODO: Instead of Option, use a union type
-{
-    let (token, location) = tokens.next()?;
-    let result = f(token, &location);
-    if result.is_none() {
-        errors.push(Error {
-            kind: ErrorKind::UnknownToken(token.clone()),
-            location,
-        });
+fn single_failure<T>(result: Option<T>, remaining: Tokens, kind: ErrorKind) -> MatchResult<'_, T> {
+    let location = remaining.current_location();
+    single_failure_at(result, remaining, kind, location)
+}
+
+// TODO: Make tokens a Tokens<'t> to ensure that the tokens aren't accidentally reused.
+fn any_token<'t>(tokens: &Tokens<'t>) -> MatchResult<'t, &'t (Token, Range<usize>)> {
+    match tokens.next() {
+        (remaining, Some(token)) => Ok((token, remaining)),
+        (remaining, None) => single_failure(None, remaining, ErrorKind::UnexpectedEndOfFile),
     }
-    result
 }
 
-fn match_next_token_with_position<T, E, F>(tokens: Tokens, errors: E, f: F) -> Option<ast::Node<T>>
+//fn choice<T, >
+
+fn token_choice<M, T>(tokens: Tokens<'_>, matches: M) -> MatchResult<'_, T>
 where
-    E: ErrorHandler,
-    F: FnOnce(&lexer::Token, &Location) -> Option<T>,
+    M: FnOnce(&Token) -> Result<fn(Tokens) -> MatchResult<'_, T>, &'static [Token]>,
 {
-    match_next_token(tokens, errors, |token, location| {
-        Some(ast::Node {
-            node: f(token, location)?,
-            position: location.clone(),
-        })
-    })
+    let location = tokens.current_location();
+    let ((token, _), remaining) = handle!(any_token(&tokens));
+    match matches(token) {
+        Ok(parser) => parser(remaining),
+        Err(expected) => Err((
+            None,
+            remaining,
+            single_error(
+                UnexpectedTokenError {
+                    expected,
+                    actual: token.clone(),
+                }
+                .into(),
+                location,
+            ),
+        )),
+    }
 }
 
 // NOTE: Could have references to the Identifiers, etc. in the tokens instead of expensive identifier cloning?
-
-// NOTE: Currently, error handling could mean that a None could pop up with no corresponding error.
-
-fn identifier<E: ErrorHandler>(
-    tokens: &mut Tokens,
-    errors: E,
-) -> Option<ast::Node<ast::Identifier>> {
-    match_next_token_with_position(tokens, errors, |token, _| {
-        if let lexer::Token::Identifier(identifier) = token {
-            Some(identifier.clone())
-        } else {
-            None
+fn identifier(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Identifier>> {
+    match handle!(any_token(&tokens)) {
+        ((Token::Identifier(identifier), range), remaining) => {
+            parsed_node_at(remaining, identifier.clone(), range)
         }
-    })
+        ((actual, _), remaining) => single_failure(
+            None,
+            remaining,
+            ErrorKind::TemporaryExpectedIdentifier(actual.clone()),
+        ),
+    }
 }
 
-fn namespace_identifier<E: ErrorHandler>(
-    tokens: &mut Tokens,
-    errors: E,
-) -> Option<ast::NamespaceIdentifier> {
+fn namespace_identifier(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::NamespaceIdentifier>> {
     let mut names = Vec::new();
-    names.push(identifier(tokens, errors)?);
-    todo!("parse identifiers");
-    Some(unsafe { ast::NamespaceIdentifier::new_unchecked(names) })
+    let (first_identifier, mut remaining_tokens) = handle!(identifier(tokens));
+    let start_location = first_identifier.position.start;
+    names.push(first_identifier);
+
+    while let Ok(((Token::DoubleColon, _), next_remaining_tokens)) = any_token(&remaining_tokens) {
+        let (next_identifier, tokens_after_identifier) = handle!(identifier(next_remaining_tokens));
+        names.push(next_identifier);
+        remaining_tokens = tokens_after_identifier;
+    }
+
+    let end_location = unsafe { names.get_unchecked(names.len() - 1) }.position.end;
+
+    Ok((
+        ast::Node {
+            node: unsafe { ast::NamespaceIdentifier::new_unchecked(names) },
+            position: Range {
+                start: start_location,
+                end: end_location,
+            },
+        },
+        remaining_tokens,
+    ))
 }
 
-fn declaration<E: ErrorHandler>(
-    tokens: &mut Tokens,
-    errors: E,
-) -> Option<ast::Node<ast::Declaration>> {
-    match_next_token_with_position(tokens, errors, |token, location| match token {
-        lexer::Token::NamespaceDeclaration => None,
-        _ => None,
+fn top_level_declaration(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Declaration>> {
+    fn namespace_declaration(tokens: Tokens) -> MatchResult<'_, ast::Declaration> {
+        //namespace_identifier(tokens)
+    }
+
+    token_choice(tokens, |token| match token {
+        Token::NamespaceDeclaration => Ok(namespace_declaration),
+        _ => Err(&[Token::NamespaceDeclaration]),
     })
 }
 
 pub fn parse(tokens: &lexer::Output) -> Output {
-    let mut input = tokens.located();
-    let mut errors = Vec::<Error>::new();
+    let mut errors = Vec::new();
+    let mut declarations = Vec::new();
+    let mut input = Tokens {
+        tokens: tokens.tokens(),
+        locations: tokens.locations(),
+    };
 
-    todo!()
+    while !input.tokens.is_empty() {
+        match top_level_declaration(input) {
+            Ok((next_declaration, remaining_input)) => {
+                input = remaining_input;
+                declarations.push(next_declaration)
+            }
+            Err((parsed_declaration, remaining_input, mut next_errors)) => {
+                if let Some(next_declaration) = parsed_declaration {
+                    declarations.push(next_declaration);
+                }
+
+                input = remaining_input;
+                errors.append(&mut next_errors);
+            }
+        }
+    }
+
+    Output {
+        declarations,
+        errors,
+    }
 }
 
 // TODO: Have property tests that generates AST -> calls Display -> parses output -> etc.

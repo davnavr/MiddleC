@@ -6,7 +6,7 @@ pub use sailar::format::{instruction_set::IntegerConstant as LiteralInteger, Ide
 #[non_exhaustive]
 pub struct Node<N> {
     pub node: N,
-    pub position: crate::location::Location,
+    pub position: std::ops::Range<crate::location::Location>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -64,7 +64,7 @@ pub struct NamespaceIdentifier(Vec<Node<Identifier>>);
 
 impl NamespaceIdentifier {
     /// Creates a new namespace identifier without checking that the identifiers are not empty.
-    pub const unsafe fn new_unchecked(identifiers: Vec<Node<Identifier>>) -> Self {
+    pub(crate) const unsafe fn new_unchecked(identifiers: Vec<Node<Identifier>>) -> Self {
         Self(identifiers)
     }
 
@@ -77,7 +77,7 @@ impl NamespaceIdentifier {
 #[non_exhaustive]
 pub enum Declaration {
     Namespace {
-        name: NamespaceIdentifier,
+        name: Node<NamespaceIdentifier>,
         declarations: Vec<Declaration>,
     },
     Function(Function),
@@ -202,7 +202,7 @@ impl Display for Declaration {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             Self::Namespace { name, declarations } => {
-                display_namespace_identifier(name, f)?;
+                display_namespace_identifier(&name.node, f)?;
                 f.write_str(" {\n")?;
                 display_separated_by(declarations, "\n", f)?;
                 f.write_str("\n}")

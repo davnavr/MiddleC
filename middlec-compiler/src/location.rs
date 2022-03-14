@@ -4,7 +4,7 @@ pub use std::num::NonZeroUsize as Number;
 
 pub const DEFAULT: Number = unsafe { Number::new_unchecked(1) };
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Location {
     pub line: Number,
@@ -102,6 +102,13 @@ impl Map {
         Location {
             line,
             column: Number::new(column).expect("column number overflow"),
+        }
+    }
+
+    pub fn get_location_range(&self, range: &std::ops::Range<usize>) -> std::ops::Range<Location> {
+        std::ops::Range {
+            start: self.get_location(range.start),
+            end: self.get_location(range.end),
         }
     }
 

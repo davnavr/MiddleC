@@ -21,7 +21,7 @@ pub enum Token {
     #[token("[")]
     OpenSquareBracket,
     #[token("]")]
-    OpenCloseBracket,
+    CloseSquareBracket,
     #[token("=")]
     Equals,
     #[token(".")]
