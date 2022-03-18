@@ -118,6 +118,7 @@ impl Output {
     }
 }
 
+#[derive(Copy, Clone)]
 struct Tokens<'t> {
     tokens: &'t [(Token, Range<usize>)],
     locations: &'t location::Map,
@@ -148,60 +149,68 @@ impl<'t> Tokens<'t> {
 // TODO: Could use (Tokens<'t>, Result<T, (Option<T>, Vec<Error>)>) instead to allow efficient retrieval of tokens.
 type MatchResult<'t, T> = Result<(T, Tokens<'t>), (Option<T>, Tokens<'t>, Vec<Error>)>;
 
+type Parser<'t, T> = fn(Tokens<'t>) -> MatchResult<'t, T>;
+
 macro_rules! handle {
     ($expression: expr) => {
         $expression.map_err(|(_, remaining, errors)| (None, remaining, errors))?
     };
 }
 
-fn parsed_node_at<'t, T>(
-    tokens: Tokens<'t>,
-    node: T,
-    range: &Range<usize>,
-) -> MatchResult<'t, ast::Node<T>> {
-    Ok((
-        ast::Node {
-            node,
-            position: tokens.locations.get_location_range(range),
-        },
-        tokens,
-    ))
+fn single_error<E: Into<ErrorKind>>(error: E, location: Location) -> Vec<Error> {
+    vec![Error {
+        kind: error.into(),
+        location,
+    }]
 }
 
-fn single_error(kind: ErrorKind, location: Location) -> Vec<Error> {
-    vec![Error { kind, location }]
-}
-
-fn single_failure_at<T>(
+fn single_failure_at<T, E: Into<ErrorKind>>(
     result: Option<T>,
     remaining: Tokens,
-    kind: ErrorKind,
+    error: E,
     location: Location,
 ) -> MatchResult<'_, T> {
-    Err((result, remaining, single_error(kind, location)))
+    Err((result, remaining, single_error(error, location)))
 }
 
-fn single_failure<T>(result: Option<T>, remaining: Tokens, kind: ErrorKind) -> MatchResult<'_, T> {
+fn single_failure<T, E: Into<ErrorKind>>(
+    result: Option<T>,
+    remaining: Tokens,
+    error: E,
+) -> MatchResult<'_, T> {
     let location = remaining.current_location();
-    single_failure_at(result, remaining, kind, location)
+    single_failure_at(result, remaining, error, location)
 }
 
-// TODO: Make tokens a Tokens<'t> to ensure that the tokens aren't accidentally reused.
-fn any_token<'t>(tokens: &Tokens<'t>) -> MatchResult<'t, &'t (Token, Range<usize>)> {
+fn any_token(tokens: Tokens) -> MatchResult<'_, &(Token, Range<usize>)> {
     match tokens.next() {
         (remaining, Some(token)) => Ok((token, remaining)),
         (remaining, None) => single_failure(None, remaining, ErrorKind::UnexpectedEndOfFile),
     }
 }
 
-//fn choice<T, >
+fn expect_token<'t>(tokens: Tokens<'t>, expected: &'static [Token; 1]) -> MatchResult<'t, ()> {
+    let ((token, _), remaining) = handle!(any_token(tokens));
+    if token == &expected[0] {
+        Ok(((), remaining))
+    } else {
+        single_failure_at(
+            None,
+            remaining,
+            UnexpectedTokenError {
+                expected,
+                actual: token.clone(),
+            },
+            tokens.current_location(),
+        )
+    }
+}
 
 fn token_choice<M, T>(tokens: Tokens<'_>, matches: M) -> MatchResult<'_, T>
 where
-    M: FnOnce(&Token) -> Result<fn(Tokens) -> MatchResult<'_, T>, &'static [Token]>,
+    M: FnOnce(&Token) -> Result<Parser<'_, T>, &'static [Token]>,
 {
-    let location = tokens.current_location();
-    let ((token, _), remaining) = handle!(any_token(&tokens));
+    let ((token, _), remaining) = handle!(any_token(tokens));
     match matches(token) {
         Ok(parser) => parser(remaining),
         Err(expected) => Err((
@@ -211,20 +220,40 @@ where
                 UnexpectedTokenError {
                     expected,
                     actual: token.clone(),
-                }
-                .into(),
-                location,
+                },
+                tokens.current_location(),
             ),
+        )),
+    }
+}
+
+fn node<'t, T>(tokens: Tokens<'t>, parser: Parser<'t, T>) -> MatchResult<'t, ast::Node<T>> {
+    let start_location = tokens.current_location();
+    match parser(tokens) {
+        Ok((contents, remaining)) => Ok((
+            ast::Node::new(contents, &start_location, &remaining.current_location()),
+            remaining,
+        )),
+        Err((contents, remaining, error)) => Err((
+            contents
+                .map(|node| ast::Node::new(node, &start_location, &remaining.current_location())),
+            remaining,
+            error,
         )),
     }
 }
 
 // NOTE: Could have references to the Identifiers, etc. in the tokens instead of expensive identifier cloning?
 fn identifier(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Identifier>> {
-    match handle!(any_token(&tokens)) {
-        ((Token::Identifier(identifier), range), remaining) => {
-            parsed_node_at(remaining, identifier.clone(), range)
-        }
+    match handle!(any_token(tokens)) {
+        ((Token::Identifier(identifier), range), remaining) => Ok((
+            ast::Node::new(
+                identifier.clone(),
+                &tokens.locations.get_location(range.start),
+                &tokens.locations.get_location(range.end),
+            ),
+            remaining,
+        )),
         ((actual, _), remaining) => single_failure(
             None,
             remaining,
@@ -239,7 +268,7 @@ fn namespace_identifier(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Namesp
     let start_location = first_identifier.position.start;
     names.push(first_identifier);
 
-    while let Ok(((Token::DoubleColon, _), next_remaining_tokens)) = any_token(&remaining_tokens) {
+    while let Ok(((Token::DoubleColon, _), next_remaining_tokens)) = any_token(remaining_tokens) {
         let (next_identifier, tokens_after_identifier) = handle!(identifier(next_remaining_tokens));
         names.push(next_identifier);
         remaining_tokens = tokens_after_identifier;
@@ -259,15 +288,50 @@ fn namespace_identifier(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Namesp
     ))
 }
 
-fn top_level_declaration(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Declaration>> {
-    fn namespace_declaration(tokens: Tokens) -> MatchResult<'_, ast::Declaration> {
-        //namespace_identifier(tokens)
-    }
+fn delimited_by<'t, T>(
+    tokens: Tokens<'t>,
+    start_delimiter: &'static [Token; 1],
+    end_delimiter: &'static [Token; 1],
+    parser: Parser<'t, T>,
+) -> MatchResult<'t, T> {
+    let ((), remaining) = handle!(expect_token(tokens, start_delimiter));
+    let (result, remaining) = handle!(parser(remaining));
+    let ((), remaining) = handle!(expect_token(remaining, end_delimiter));
+    Ok((result, remaining))
+}
 
-    token_choice(tokens, |token| match token {
-        Token::NamespaceDeclaration => Ok(namespace_declaration),
-        _ => Err(&[Token::NamespaceDeclaration]),
+fn repeat_parser<'t, T>(tokens: Tokens<'t>, parser: Parser<'t, T>) -> MatchResult<'t, Vec<T>> {
+    //let mut errors = Vec::new();
+    //let mut results = Vec::new();
+
+    todo!("how does parser indicate that parsing should stop?");
+}
+
+fn top_level_declaration_node(tokens: Tokens) -> MatchResult<'_, ast::Node<ast::Declaration>> {
+    node(tokens, |tokens| {
+        token_choice(tokens, |token| match token {
+            Token::NamespaceDeclaration => Ok(|tokens| {
+                let (name, remaining) = handle!(namespace_identifier(tokens));
+                let (declarations, remaining) = delimited_by(
+                    remaining,
+                    &[Token::OpenCurlyBracket],
+                    &[Token::CloseCurlyBracket],
+                    top_level_declarations,
+                )
+                .unwrap_or_else(|(result, remaining, _)| (result.unwrap_or_default(), remaining));
+
+                Ok((
+                    ast::Declaration::Namespace { name, declarations },
+                    remaining,
+                ))
+            }),
+            _ => Err(&[Token::NamespaceDeclaration]),
+        })
     })
+}
+
+fn top_level_declarations(tokens: Tokens) -> MatchResult<'_, Vec<ast::Node<ast::Declaration>>> {
+    repeat_parser(tokens, top_level_declaration_node)
 }
 
 pub fn parse(tokens: &lexer::Output) -> Output {
@@ -279,7 +343,7 @@ pub fn parse(tokens: &lexer::Output) -> Output {
     };
 
     while !input.tokens.is_empty() {
-        match top_level_declaration(input) {
+        match top_level_declaration_node(input) {
             Ok((next_declaration, remaining_input)) => {
                 input = remaining_input;
                 declarations.push(next_declaration)

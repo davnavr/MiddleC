@@ -1,4 +1,6 @@
+use crate::location::Location;
 use std::fmt::{Display, Formatter, Write as _};
+use std::ops::Range;
 
 pub use sailar::format::{instruction_set::IntegerConstant as LiteralInteger, Identifier};
 
@@ -6,7 +8,19 @@ pub use sailar::format::{instruction_set::IntegerConstant as LiteralInteger, Ide
 #[non_exhaustive]
 pub struct Node<N> {
     pub node: N,
-    pub position: std::ops::Range<crate::location::Location>,
+    pub position: Range<Location>,
+}
+
+impl<N> Node<N> {
+    pub fn new(contents: N, start_location: &Location, end_location: &Location) -> Self {
+        Self {
+            node: contents,
+            position: Range {
+                start: *start_location,
+                end: *end_location,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -78,7 +92,7 @@ impl NamespaceIdentifier {
 pub enum Declaration {
     Namespace {
         name: Node<NamespaceIdentifier>,
-        declarations: Vec<Declaration>,
+        declarations: Vec<Node<Declaration>>,
     },
     Function(Function),
 }
